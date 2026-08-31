@@ -5174,6 +5174,7 @@
         this.ip = hy;
         this.intentionalDisconnect = false;
         this.createSocket(1);
+        this.createSocket(2);
         console.log("Connecting to: " + hy);
       }
     }
@@ -5216,9 +5217,7 @@
     // Standby Tab 3 opens only once both active tabs are authenticated, so
     // the three reCAPTCHA challenges never need to overlap.
     static ["scheduleBackup"](delay = 1500) {
-      clearTimeout(this.backupRetryTimer);
-      if (this.intentionalDisconnect || !this.ip || !this.connected || !this.connected2 || this.ws3Open || this.backupConnecting) return;
-      this.backupRetryTimer = setTimeout(() => this.connectBackup(), delay);
+      return;
     }
     static ["connectBackup"]() {
       if (this.intentionalDisconnect || !this.ip || !this.connected || !this.connected2 || this.ws3Open || this.backupConnecting) return;
@@ -5329,6 +5328,11 @@
                 WsConnection.ws2 = null;
                 WsConnection.connected2 = false;
                 PacketSender.stopPingLoop(2);
+                setTimeout(() => {
+                  if (!WsConnection.intentionalDisconnect && WsConnection.ip && !WsConnection.ws2) {
+                    WsConnection.createSocket(2);
+                  }
+                }, 2000);
               }
             } else if (msg.type === "chat_lock") {
               Notifications.warn("Drag+", msg.locked ? "Chat locked" : "Chat unlocked");
@@ -6095,15 +6099,10 @@
       console.log("Connected to: " + WsConnection.ip);
       if (1 === adx) {
         WsConnection.connected = true;
-        WsConnection.createSocket(2);
-        console.log("Drag+: Tab 1 authenticated, opening Tab 2");
       } else if (2 === adx) {
         WsConnection.connected2 = true;
       }
-      if (WsConnection.connected && WsConnection.connected2) {
-        this.handleDisabledProperty(false);
-        WsConnection.scheduleBackup();
-      }
+      this.handleDisabledProperty(false);
     }
     static ["handleDisabledProperty"](du) {
       document.querySelector("#button-play").disabled = du;
@@ -6138,10 +6137,9 @@
       // Guest (no account) sends an empty string -> [255, 0, 0], which is
       // byte-for-byte what the old client always sent. A logged-in account
       // sends [255, unicode(uuid|gameToken), 0, 0].
-      // Only Tab 1 carries the account: the game server allows a single
-      // connection per account (concurrent-login protection), so Tabs 2/3
-      // must stay guests or they get kicked in a reconnect loop.
-      const str = 1 === Number(ahn) ? Account.buildLoginString(Account.uuid) : "";
+      const tabNum = Number(ahn);
+      const uuid = 1 === tabNum ? Account.uuid : 2 === tabNum ? Account.uuid2 : "";
+      const str = Account.buildLoginString(uuid, tabNum);
       console.log("Drag+ Login packet (tab " + ahn + "): " + (str ? (str.length > 24 ? str.slice(0, 24) + "..." : str) : "guest"));
       if (!str) {
         const px = new Uint8Array([255, 0, 0]);
@@ -6165,9 +6163,7 @@
       });
     }
     static async ["handshake2"](oq) {
-      if (3 !== oq && WsConnection.connected && WsConnection.connected2) {
-        return true;
-      }
+      if (3 === oq) return true;
       var add;
       try {
         add = await WsConnection.getToken(oq);
@@ -6360,6 +6356,11 @@
       this.nick = localStorage.getItem("active_session_nick") || "";
       this.gameToken = null;
       this.gameTokenAt = 0;
+      this.uuid2 = localStorage.getItem("active_session_id_2") || "";
+      this.nick2 = localStorage.getItem("active_session_nick_2") || "";
+      this.gameToken2 = null;
+      this.gameToken2At = 0;
+      this.loginTarget = 1;
       this.levels = null;
       this.xp = -1;
       this.level = 0;
@@ -6385,18 +6386,25 @@
         this.loadLevels();
         this.startXpPoll();
       }
+      if (this.loggedIn2) {
+        this.refreshGameToken(2);
+      }
     }
     static get ["loggedIn"]() {
       return !!this.uuid && "logout" !== this.uuid;
     }
-    static ["buildLoginString"](u) {
+    static get ["loggedIn2"]() {
+      return !!this.uuid2 && "logout" !== this.uuid2;
+    }
+    static ["buildLoginString"](u, tab) {
       if (!u) {
         return "";
       }
       if ("logout" === u || 0 === u.indexOf("locked-")) {
         return u;
       }
-      return this.gameToken ? u + "|" + this.gameToken : u;
+      const tk = 1 === tab ? this.gameToken : 2 === tab ? this.gameToken2 : this.gameToken;
+      return tk ? u + "|" + tk : u;
     }
     static ["openLogin"](provider) {
       // Match the game's own popup (createWindow) exactly: same window name
@@ -6420,21 +6428,36 @@
         Notifications.warn("Login", (e && e.error) || "Login error!");
         return;
       }
-      this.uuid = e.uuid || "";
-      this.nick = e.Name || "";
-      if (this.uuid) {
-        localStorage.setItem("active_session_id", this.uuid);
-        localStorage.setItem("active_session_nick", this.nick);
+      const target = this.loginTarget;
+      const uuid = e.uuid || "";
+      const nick = e.Name || "";
+      if (2 === target) {
+        this.uuid2 = uuid;
+        this.nick2 = nick;
+        if (uuid) {
+          localStorage.setItem("active_session_id_2", uuid);
+          localStorage.setItem("active_session_nick_2", nick);
+        }
+        this.gameToken2 = null;
+        this.gameToken2At = 0;
+        Notifications.warn("Login", "Tab 2 account: " + (nick || uuid));
+      } else {
+        this.uuid = uuid;
+        this.nick = nick;
+        if (uuid) {
+          localStorage.setItem("active_session_id", uuid);
+          localStorage.setItem("active_session_nick", nick);
+        }
+        this.gameToken = null;
+        this.gameTokenAt = 0;
       }
-      this.gameToken = null;
-      this.gameTokenAt = 0;
       this.levels = (e && e.Shop && e.Shop.Levels) || this.levels;
       this.coins = parseInt(e && e.Coins) || 0;
       this.sweets = parseInt(e && e.Sweets) || 0;
       if (e && e.vipEndAt) this.vipEndAt = e.vipEndAt;
       if (e && e["XP Boost"]) this.xpBoost = e["XP Boost"];
       if (e && e["Mass Boost"]) this.massBoost = e["Mass Boost"];
-      this.refreshGameToken();
+      this.refreshGameToken(2 === target ? 2 : 1);
       this.updateUI();
       PacketSender.resendLogin();
       const axp = parseInt(e && e.XP);
@@ -6444,7 +6467,32 @@
       this.loadLevels();
       this.startXpPoll();
     }
-    static ["refreshGameToken"]() {
+    static ["refreshGameToken"](tab) {
+      if (2 === tab) {
+        if (!this.loggedIn2) {
+          this.gameToken2 = null;
+          return;
+        }
+        if (this.gameToken2 && Date.now() - this.gameToken2At < 24e4) {
+          return;
+        }
+        fetch("https://3rb.io/api/auth/game-token", { credentials: "include" })
+          .then((r) => {
+            if (!r.ok) throw new Error("game-token status " + r.status);
+            return r.json();
+          })
+          .then((d) => {
+            const tk = d && (d.token || (d.data && d.data.token));
+            if (tk) {
+              this.gameToken2 = tk;
+              this.gameToken2At = Date.now();
+              Notifications.command("Login", "Tab 2 game token ready");
+              PacketSender.resendLogin();
+            }
+          })
+          .catch(() => {});
+        return;
+      }
       if (!this.loggedIn) {
         this.gameToken = null;
         return;
@@ -6583,72 +6631,92 @@
       this.levelAnnounced = true;
       Notifications.command("Level", "Your level: " + this.level + " (" + this.xp + " XP)");
     }
-    static ["logout"]() {
-      this.stopXpPoll();
-      this.uuid = "logout";
-      this.gameToken = null;
-      PacketSender.resendLogin();
-      this.uuid = "";
-      this.nick = "";
-      this.gameTokenAt = 0;
-      localStorage.removeItem("active_session_id");
-      localStorage.removeItem("active_session_nick");
-      fetch("php/Auth.php?logout", { credentials: "include" }).catch(() => {});
+    static ["logout"](tab) {
+      if (2 === tab) {
+        this.uuid2 = "";
+        this.nick2 = "";
+        this.gameToken2 = null;
+        this.gameToken2At = 0;
+        localStorage.removeItem("active_session_id_2");
+        localStorage.removeItem("active_session_nick_2");
+        PacketSender.resendLogin();
+      } else {
+        this.stopXpPoll();
+        this.uuid = "logout";
+        this.gameToken = null;
+        PacketSender.resendLogin();
+        this.uuid = "";
+        this.nick = "";
+        this.gameTokenAt = 0;
+        localStorage.removeItem("active_session_id");
+        localStorage.removeItem("active_session_nick");
+        fetch("php/Auth.php?logout", { credentials: "include" }).catch(() => {});
+      }
       this.updateUI();
     }
     static ["handleStorageChange"](e) {
-      if ("active_session_id" !== e.key) {
-        return;
+      if ("active_session_id" === e.key) {
+        const v = localStorage.getItem("active_session_id");
+        if (v === this.uuid) return;
+        this.uuid = v || "";
+        this.nick = this.uuid ? localStorage.getItem("active_session_nick") || "" : "";
+        this.gameToken = null;
+        this.gameTokenAt = 0;
+        if (this.loggedIn) {
+          this.refreshGameToken();
+          this.startXpPoll();
+        }
+        this.updateUI();
+        PacketSender.resendLogin();
+      } else if ("active_session_id_2" === e.key) {
+        const v = localStorage.getItem("active_session_id_2");
+        if (v === this.uuid2) return;
+        this.uuid2 = v || "";
+        this.nick2 = this.uuid2 ? localStorage.getItem("active_session_nick_2") || "" : "";
+        this.gameToken2 = null;
+        this.gameToken2At = 0;
+        if (this.loggedIn2) {
+          this.refreshGameToken(2);
+        }
+        this.updateUI();
+        PacketSender.resendLogin();
       }
-      const v = localStorage.getItem("active_session_id");
-      if (v === this.uuid) {
-        return;
-      }
-      this.uuid = v || "";
-      this.nick = this.uuid ? localStorage.getItem("active_session_nick") || "" : "";
-      this.gameToken = null;
-      this.gameTokenAt = 0;
-      if (this.loggedIn) {
-        this.refreshGameToken();
-        this.startXpPoll();
-      }
-      this.updateUI();
-      PacketSender.resendLogin();
     }
     static ["bindUI"]() {
-      // Google/Discord login are native anchors (href + target="_blank" +
-      // rel="opener") so the browser opens the Auth.php popup itself - no
-      // window.open needed (the Tampermonkey sandbox swallows those). The
-      // relay/authResponse still wires up through window.opener on the page.
+      $(document).on("click", ".account-btn.discord", (e) => {
+        this.loginTarget = 1;
+      });
+      $(document).on("click", ".account-btn.google", (e) => {
+        this.loginTarget = 2;
+      });
       $(document).on("click", "#account-status-logout", (e) => {
         e.preventDefault();
         this.logout();
       });
     }
     static ["updateUI"]() {
-      if (!this.loggedIn) {
+      const hasTab1 = this.loggedIn;
+      const hasTab2 = this.loggedIn2;
+      if (!hasTab1 && !hasTab2) {
         $("#account-login").show();
         $("#account-status-info").text("Anonymous");
         $("#account-status-logout").hide();
         return;
       }
-      $("#account-login").hide();
       const parts = [];
-      parts.push("👤 " + (this.nick || (this.uuid.length > 10 ? this.uuid.slice(0, 10) + "..." : this.uuid)));
-      if (this.isVip()) {
-        parts.push("[VIP]");
+      if (hasTab1) {
+        parts.push("T1: " + (this.nick || this.uuid.slice(0, 8)));
       }
-      parts.push("💰 " + (this.coins || 0).toLocaleString());
-      if (0 < this.sweets) {
-        parts.push("🍬 " + this.sweets.toLocaleString());
-      }
-      if (this.boostActive(this.xpBoost)) {
-        parts.push("⚡ XP Boost");
-      } else if (this.boostActive(this.massBoost)) {
-        parts.push("⚡ Mass Boost");
+      if (hasTab2) {
+        parts.push("T2: " + (this.nick2 || this.uuid2.slice(0, 8)));
       }
       $("#account-status-info").text(parts.join(" │ "));
       $("#account-status-logout").show();
+      if (hasTab1 && hasTab2) {
+        $("#account-login").hide();
+      } else {
+        $("#account-login").show();
+      }
     }
   }
   class RelayWs {
