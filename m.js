@@ -6689,33 +6689,40 @@
       $(document).on("click", ".account-btn.google", (e) => {
         this.loginTarget = 2;
       });
-      $(document).on("click", "#account-status-logout", (e) => {
+      $(document).on("click", ".account-logout-btn", (e) => {
         e.preventDefault();
-        this.logout();
+        const tab = Number($(e.target).data("tab"));
+        this.logout(tab);
       });
+    }
+    static ["buildTabInfo"](nick, uuid, tab) {
+      const parts = [];
+      parts.push(nick || uuid.slice(0, 10));
+      if (1 === tab && this.isVip()) parts.push("[VIP]");
+      if (1 === tab) parts.push("💰" + (this.coins || 0));
+      if (0 < this.sweets && 1 === tab) parts.push("🍬" + this.sweets);
+      return parts.join(" ");
     }
     static ["updateUI"]() {
       const hasTab1 = this.loggedIn;
       const hasTab2 = this.loggedIn2;
-      if (!hasTab1 && !hasTab2) {
-        $("#account-login").show();
-        $("#account-status-info").text("Anonymous");
-        $("#account-status-logout").hide();
-        return;
-      }
-      const parts = [];
       if (hasTab1) {
-        parts.push("T1: " + (this.nick || this.uuid.slice(0, 8)));
+        $("#account-tab1 .account-btn").hide();
+        $("#account-tab1-info").text(this.buildTabInfo(this.nick, this.uuid, 1)).show();
+        $("#account-tab1 .account-logout-btn").show();
+      } else {
+        $("#account-tab1 .account-btn").show();
+        $("#account-tab1-info").hide();
+        $("#account-tab1 .account-logout-btn").hide();
       }
       if (hasTab2) {
-        parts.push("T2: " + (this.nick2 || this.uuid2.slice(0, 8)));
-      }
-      $("#account-status-info").text(parts.join(" │ "));
-      $("#account-status-logout").show();
-      if (hasTab1 && hasTab2) {
-        $("#account-login").hide();
+        $("#account-tab2 .account-btn").hide();
+        $("#account-tab2-info").text(this.buildTabInfo(this.nick2, this.uuid2, 2)).show();
+        $("#account-tab2 .account-logout-btn").show();
       } else {
-        $("#account-login").show();
+        $("#account-tab2 .account-btn").show();
+        $("#account-tab2-info").hide();
+        $("#account-tab2 .account-logout-btn").hide();
       }
     }
   }
